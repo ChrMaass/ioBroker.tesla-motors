@@ -1,0 +1,139 @@
+name: Fork ioBroker Deploy
+
+on:
+  schedule:
+    # Workflow liegt absichtlich nur im Fork-Default-Branch und prüft von dort
+    # regelmäßig den Telemetrie-Branch. So landet die CI/CD nicht im Community-PR.
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Branch, Tag oder SHA, der auf dem ioBroker installiert werden soll'
+        required: true
+        default: 'feature/335-fleet-telemetry'
+      force:
+        description: 'Auch deployen, wenn derselbe SHA bereits installiert ist'
+        type: boolean
+        required: true
+        default: false
+      dry_run:
+        description: 'Nur Checkout/Tests ausführen, aber nicht installieren'
+        type: boolean
+        required: true
+        default: false
+
+concurrency:
+  group: fork-iobroker-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Tesla-Adapter auf Christians ioBroker aktualisieren
+    if: github.repository == 'ChrMaass/ioBroker.tesla-motors'
+    runs-on: [self-hosted, maass-home, iobroker]
+    env:
+      SOURCE_REF: ${{ github.event.inputs.source_ref || 'feature/335-fleet-telemetry' }}
+      FORCE_DEPLOY: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+      IOBROKER_DIR: /opt/iobroker
+      IOBROKER_INSTANCE: tesla-motors.0
+      DEPLOY_MARKER_FILE: /opt/iobroker/.codex/tesla-motors-deployed-sha
+    steps:
+      - name: Quellstand auschecken
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.source_ref || 'feature/335-fleet-telemetry' }}
+          fetch-depth: 0
+
+      - name: Deployment-Status prüfen
+        id: status
+        run: |
+          set -euo pipefail
+          DEPLOY_SHA="$(git rev-parse HEAD)"
+          INSTALLED_SHA=''
+          if [ -f "${DEPLOY_MARKER_FILE}" ]; then
+            INSTALLED_SHA="$(tr -d '[:space:]' < "${DEPLOY_MARKER_FILE}" || true)"
+          fi
+
+          SHOULD_DEPLOY='true'
+          if [ "${FORCE_DEPLOY}" != 'true' ] && [ "${DEPLOY_SHA}" = "${INSTALLED_SHA}" ]; then
+            SHOULD_DEPLOY='false'
+          fi
+
+          echo "deploy_sha=${DEPLOY_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "installed_sha=${INSTALLED_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "should_deploy=${SHOULD_DEPLOY}" >> "${GITHUB_OUTPUT}"
+
+          {
+            echo "Deploy-SHA: ${DEPLOY_SHA}"
+            echo "Installierter SHA: ${INSTALLED_SHA:-<unbekannt>}"
+            echo "Soll deployen: ${SHOULD_DEPLOY}"
+          }
+
+      - name: Node.js vorbereiten
+        if: steps.status.outputs.should_deploy == 'true' || github.event_name == 'workflow_dispatch'
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24.x'
+          cache: npm
+
+      - name: Adapter-Prüfungen ausführen
+        if: steps.status.outputs.should_deploy == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run lint -- .
+          npm test
+
+      - name: Dry Run beenden
+        if: env.DRY_RUN == 'true'
+        run: |
+          echo "Dry Run aktiv: Es wurde nichts auf ${IOBROKER_DIR} installiert."
+
+      - name: Adapter auf ioBroker installieren
+        if: steps.status.outputs.should_deploy == 'true' && env.DRY_RUN != 'true'
+        run: |
+          set -euo pipefail
+          if [ ! -d "${IOBROKER_DIR}" ]; then
+            echo "${IOBROKER_DIR} existiert nicht. Der Runner muss auf dem ioBroker-Host laufen."
+            exit 1
+          fi
+          if [ ! -w "${IOBROKER_DIR}" ]; then
+            echo "${IOBROKER_DIR} ist nicht beschreibbar. Bitte den Runner als Benutzer iobroker betreiben."
+            exit 1
+          fi
+
+          mkdir -p "${IOBROKER_DIR}/backups" "$(dirname "${DEPLOY_MARKER_FILE}")"
+          BACKUP_FILE="${IOBROKER_DIR}/backups/iobroker.tesla-motors.before-ci-deploy.$(date -u +%Y%m%d-%H%M%S).tgz"
+          tar -czf "${BACKUP_FILE}" \
+            -C "${IOBROKER_DIR}" \
+            node_modules/iobroker.tesla-motors \
+            package.json \
+            package-lock.json 2>/dev/null || true
+
+          cd "${IOBROKER_DIR}"
+          ./iobroker stop "${IOBROKER_INSTANCE}" || true
+          npm install "${GITHUB_WORKSPACE}"
+          ./iobroker upload tesla-motors
+          ./iobroker start "${IOBROKER_INSTANCE}"
+
+          sleep 20
+          ./iobroker state get "system.adapter.${IOBROKER_INSTANCE}.alive" || true
+          echo "${{ steps.status.outputs.deploy_sha }}" > "${DEPLOY_MARKER_FILE}"
+          echo "Backup: ${BACKUP_FILE}"
+
+      - name: Zusammenfassung
+        if: always()
+        run: |
+          {
+            echo '## Fork ioBroker Deploy'
+            echo
+            echo "- Quelle: \`${SOURCE_REF}\`"
+            echo "- Deploy-SHA: \`${{ steps.status.outputs.deploy_sha }}\`"
+            echo "- Vorher installiert: \`${{ steps.status.outputs.installed_sha }}\`"
+            echo "- Deployment nötig: \`${{ steps.status.outputs.should_deploy }}\`"
+            echo "- Dry Run: \`${DRY_RUN}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
