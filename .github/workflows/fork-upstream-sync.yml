@@ -1,0 +1,384 @@
+name: Fork Upstream Sync
+
+on:
+  schedule:
+    # Läuft nur auf dem Default-Branch des Forks. Der eigentliche
+    # Telemetrie-PR-Branch wird explizit ausgecheckt und mit upstream/master
+    # synchronisiert, damit private Fork-Automation nicht in den Community-PR rutscht.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: 'Fork-Branch, der mit dem Community-Adapter synchron gehalten wird'
+        required: true
+        default: 'feature/335-fleet-telemetry'
+      upstream_branch:
+        description: 'Upstream-Branch des Community-Adapters'
+        required: true
+        default: 'master'
+      request_copilot_review:
+        description: 'Nach einem sauberen Sync-PR optional Copilot Review anfragen'
+        type: boolean
+        required: true
+        default: true
+      assign_copilot_on_issue:
+        description: 'Bei Konflikten/Fehlern optional Copilot Coding Agent zuweisen'
+        type: boolean
+        required: true
+        default: true
+
+concurrency:
+  group: fork-upstream-sync-${{ github.event.inputs.target_branch || 'feature/335-fleet-telemetry' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  sync:
+    name: Upstream in Fork-Branch übernehmen
+    if: github.repository == 'ChrMaass/ioBroker.tesla-motors'
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM_REPOSITORY: iobroker-community-adapters/ioBroker.tesla-motors
+      TARGET_BRANCH: ${{ github.event.inputs.target_branch || 'feature/335-fleet-telemetry' }}
+      UPSTREAM_BRANCH: ${{ github.event.inputs.upstream_branch || 'master' }}
+      REQUEST_COPILOT_REVIEW: ${{ github.event_name != 'workflow_dispatch' || inputs.request_copilot_review }}
+      ASSIGN_COPILOT_ON_ISSUE: ${{ github.event_name != 'workflow_dispatch' || inputs.assign_copilot_on_issue }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Fork auschecken
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Node.js vorbereiten
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24.x'
+          cache: npm
+
+      - name: Git konfigurieren
+        run: |
+          git config user.name 'maass-home automation'
+          git config user.email 'actions@users.noreply.github.com'
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git" 2>/dev/null || \
+            git remote set-url upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+
+      - name: Labels sicherstellen
+        run: |
+          set -euo pipefail
+          gh label create upstream-sync --color 0E8A16 --description 'Automatischer Abgleich mit dem Community-Adapter' --force
+          gh label create needs-manual-sync --color D93F0B --description 'Upstream-Änderungen benötigen manuelle Prüfung' --force
+          gh label create automated-pr --color 5319E7 --description 'Von GitHub Actions erzeugter PR' --force
+          gh label create copilot-task --color 1D76DB --description 'Für Copilot Coding Agent vorbereitet' --force
+
+      - name: Upstream-Sync vorbereiten
+        id: sync
+        run: |
+          set -euo pipefail
+
+          git fetch origin "${TARGET_BRANCH}" --prune
+          git fetch upstream "${UPSTREAM_BRANCH}" --prune
+
+          TARGET_SHA="$(git rev-parse "origin/${TARGET_BRANCH}")"
+          UPSTREAM_SHA="$(git rev-parse "upstream/${UPSTREAM_BRANCH}")"
+          SYNC_BRANCH="automation/upstream-sync-$(date -u +%Y%m%d-%H%M%S)"
+
+          echo "target_sha=${TARGET_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "upstream_sha=${UPSTREAM_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "sync_branch=${SYNC_BRANCH}" >> "${GITHUB_OUTPUT}"
+
+          if git merge-base --is-ancestor "${UPSTREAM_SHA}" "${TARGET_SHA}"; then
+            echo "sync_needed=false" >> "${GITHUB_OUTPUT}"
+            echo "merge_status=up_to_date" >> "${GITHUB_OUTPUT}"
+            echo "${TARGET_BRANCH} enthält ${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH} bereits."
+            exit 0
+          fi
+
+          echo "sync_needed=true" >> "${GITHUB_OUTPUT}"
+          git switch -c "${SYNC_BRANCH}" "${TARGET_SHA}"
+
+          set +e
+          git merge --no-edit --no-ff "${UPSTREAM_SHA}"
+          MERGE_EXIT=$?
+          set -e
+
+          if [ "${MERGE_EXIT}" -ne 0 ]; then
+            CONFLICTS="$(git diff --name-only --diff-filter=U | sed '/^$/d' || true)"
+            printf '%s\n' "${CONFLICTS}" > upstream-conflicts.txt
+            git merge --abort || true
+            echo "merge_status=conflict" >> "${GITHUB_OUTPUT}"
+            {
+              echo 'conflict_files<<EOF'
+              cat upstream-conflicts.txt
+              echo 'EOF'
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          echo "merge_status=clean" >> "${GITHUB_OUTPUT}"
+          echo "merged_sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
+      - name: Konflikt-Issue erstellen
+        if: steps.sync.outputs.sync_needed == 'true' && steps.sync.outputs.merge_status == 'conflict'
+        id: conflict_issue
+        run: |
+          set -euo pipefail
+          BODY_FILE="$(mktemp)"
+          cat > "${BODY_FILE}" <<EOF
+          # Upstream-Sync benötigt manuelle Prüfung
+
+          Der automatische Abgleich des Fork-Branches \`${TARGET_BRANCH}\` mit
+          \`${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH}\` konnte nicht sauber gemerged werden.
+
+          ## Stand
+
+          - Ziel-Branch im Fork: \`${TARGET_BRANCH}\`
+          - Bisheriger Ziel-SHA: \`${{ steps.sync.outputs.target_sha }}\`
+          - Neuer Upstream-SHA: \`${{ steps.sync.outputs.upstream_sha }}\`
+          - Ergebnis: Merge-Konflikt
+
+          ## Konfliktdateien
+
+          \`\`\`
+          ${{ steps.sync.outputs.conflict_files }}
+          \`\`\`
+
+          ## Aufgabe für Copilot / Bearbeiter
+
+          Bitte übernimm die Upstream-Änderungen aus \`${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH}\`
+          in den Fork-Branch \`${TARGET_BRANCH}\`, ohne die Fleet-Telemetry-Erweiterungen zu entfernen.
+
+          Wichtig:
+
+          - Die privaten Fork-Automationsdateien aus \`.github/workflows/fork-*\` und \`docs/fork-automation.md\` dürfen **nicht** in den Upstream-PR \`#336\` gelangen.
+          - Für den Telemetrie-Branch nur \`upstream/${UPSTREAM_BRANCH}\` übernehmen, nicht den Fork-\`master\` in den Feature-Branch mergen.
+          - Danach bitte \`npm run lint -- .\` und \`npm test\` ausführen.
+          EOF
+
+          ISSUE_URL="$(gh issue create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Upstream-Sync prüfen: ${TARGET_BRANCH} ↔ ${UPSTREAM_BRANCH}" \
+            --body-file "${BODY_FILE}" \
+            --label upstream-sync \
+            --label needs-manual-sync \
+            --label copilot-task)"
+          echo "issue_url=${ISSUE_URL}" >> "${GITHUB_OUTPUT}"
+          echo "issue_number=${ISSUE_URL##*/}" >> "${GITHUB_OUTPUT}"
+
+      - name: Copilot Coding Agent optional dem Konflikt-Issue zuweisen
+        if: steps.conflict_issue.outputs.issue_number != '' && env.ASSIGN_COPILOT_ON_ISSUE == 'true'
+        continue-on-error: true
+        env:
+          COPILOT_ASSIGNMENT_TOKEN: ${{ secrets.COPILOT_ASSIGNMENT_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.conflict_issue.outputs.issue_number }}
+        run: |
+          set -euo pipefail
+          if [ -z "${COPILOT_ASSIGNMENT_TOKEN:-}" ]; then
+            echo "COPILOT_ASSIGNMENT_TOKEN ist nicht gesetzt; Issue wurde nur vorbereitet."
+            exit 0
+          fi
+
+          export GH_TOKEN="${COPILOT_ASSIGNMENT_TOKEN}"
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+
+          BOT_ID="$(gh api graphql \
+            -H 'GraphQL-Features: issues_copilot_assignment_api_support,coding_agent_model_selection' \
+            -F owner="${OWNER}" \
+            -F repo="${REPO}" \
+            -f query='query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { suggestedActors(capabilities: [CAN_BE_ASSIGNED], first: 100) { nodes { login __typename ... on Bot { id } } } } }' \
+            --jq '.data.repository.suggestedActors.nodes[] | select(.login == "copilot-swe-agent") | .id' \
+          )"
+
+          if [ -z "${BOT_ID}" ]; then
+            echo "Copilot Coding Agent ist für dieses Repository nicht als Assignee verfügbar."
+            exit 0
+          fi
+
+          REPOSITORY_ID="$(gh api graphql \
+            -F owner="${OWNER}" \
+            -F repo="${REPO}" \
+            -f query='query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { id } }' \
+            --jq '.data.repository.id' \
+          )"
+
+          ISSUE_ID="$(gh api graphql \
+            -F owner="${OWNER}" \
+            -F repo="${REPO}" \
+            -F number="${ISSUE_NUMBER}" \
+            -f query='query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { issue(number: $number) { id } } }' \
+            --jq '.data.repository.issue.id' \
+          )"
+
+          gh api graphql \
+            -H 'GraphQL-Features: issues_copilot_assignment_api_support,coding_agent_model_selection' \
+            -F issueId="${ISSUE_ID}" \
+            -F botId="${BOT_ID}" \
+            -F repositoryId="${REPOSITORY_ID}" \
+            -F baseRef="${TARGET_BRANCH}" \
+            -F customInstructions="Bitte synchronisiere ${TARGET_BRANCH} mit ${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH}, löse Konflikte und erzeuge einen PR im Fork. Die privaten Fork-Automationsdateien dürfen nicht in den Upstream-PR gelangen." \
+            -f query='mutation($issueId: ID!, $botId: ID!, $repositoryId: ID!, $baseRef: String!, $customInstructions: String!) { updateIssue(input: { id: $issueId, assigneeIds: [$botId], agentAssignment: { targetRepositoryId: $repositoryId, baseRef: $baseRef, customInstructions: $customInstructions } }) { issue { id number } } }'
+
+      - name: Tests auf sauberem Merge ausführen
+        if: steps.sync.outputs.sync_needed == 'true' && steps.sync.outputs.merge_status == 'clean'
+        id: tests
+        run: |
+          set -euo pipefail
+          TEST_LOG="${RUNNER_TEMP}/upstream-sync-tests.log"
+          set +e
+          {
+            TEST_EXIT=0
+            npm ci || TEST_EXIT=$?
+            if [ "${TEST_EXIT}" -eq 0 ]; then
+              npm run lint -- . || TEST_EXIT=$?
+            fi
+            if [ "${TEST_EXIT}" -eq 0 ]; then
+              npm test || TEST_EXIT=$?
+            fi
+            exit "${TEST_EXIT}"
+          } 2>&1 | tee "${TEST_LOG}"
+          TEST_EXIT=${PIPESTATUS[0]}
+          set -e
+          echo "log_file=${TEST_LOG}" >> "${GITHUB_OUTPUT}"
+          if [ "${TEST_EXIT}" -eq 0 ]; then
+            echo "test_status=success" >> "${GITHUB_OUTPUT}"
+          else
+            echo "test_status=failure" >> "${GITHUB_OUTPUT}"
+          fi
+          exit 0
+
+      - name: Sync-Branch pushen
+        if: steps.sync.outputs.sync_needed == 'true' && steps.sync.outputs.merge_status == 'clean'
+        run: |
+          set -euo pipefail
+          git push --set-upstream origin "${{ steps.sync.outputs.sync_branch }}"
+
+      - name: Sync-PR im Fork erstellen
+        if: steps.sync.outputs.sync_needed == 'true' && steps.sync.outputs.merge_status == 'clean'
+        id: pr
+        run: |
+          set -euo pipefail
+          BODY_FILE="$(mktemp)"
+          TEST_STATUS="${{ steps.tests.outputs.test_status }}"
+          if [ "${TEST_STATUS}" = 'success' ]; then
+            PR_STATE_TEXT='Die lokalen Prüfungen sind erfolgreich durchgelaufen.'
+            DRAFT_FLAG=''
+          else
+            PR_STATE_TEXT='Die lokalen Prüfungen sind fehlgeschlagen; der PR bleibt deshalb als Draft offen.'
+            DRAFT_FLAG='--draft'
+          fi
+
+          cat > "${BODY_FILE}" <<EOF
+          # Automatischer Upstream-Sync
+
+          Dieser PR synchronisiert den Fork-Branch \`${TARGET_BRANCH}\` mit
+          \`${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH}\`.
+
+          ## Stand
+
+          - Ziel-Branch im Fork: \`${TARGET_BRANCH}\`
+          - Alter Ziel-SHA: \`${{ steps.sync.outputs.target_sha }}\`
+          - Übernommener Upstream-SHA: \`${{ steps.sync.outputs.upstream_sha }}\`
+          - Teststatus: \`${TEST_STATUS}\`
+
+          ${PR_STATE_TEXT}
+
+          ## Wichtiger Hinweis
+
+          Dieser PR ist **nur für den Fork \`${GITHUB_REPOSITORY}\`** gedacht.
+          Die Fork-Automation selbst darf nicht Bestandteil des Upstream-PRs zum
+          Community-Adapter werden. Für den Telemetrie-Branch wurde daher direkt
+          \`upstream/${UPSTREAM_BRANCH}\` gemerged und nicht der Fork-\`master\`.
+          EOF
+
+          # shellcheck disable=SC2086
+          PR_URL="$(gh pr create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --base "${TARGET_BRANCH}" \
+            --head "${{ steps.sync.outputs.sync_branch }}" \
+            --title "Upstream-Sync: ${TARGET_BRANCH} aktualisieren" \
+            --body-file "${BODY_FILE}" \
+            ${DRAFT_FLAG})"
+          echo "pr_url=${PR_URL}" >> "${GITHUB_OUTPUT}"
+          gh pr edit "${PR_URL}" --add-label upstream-sync --add-label automated-pr
+
+      - name: Testfehler-Issue erstellen
+        if: steps.pr.outputs.pr_url != '' && steps.tests.outputs.test_status == 'failure'
+        id: failed_tests_issue
+        run: |
+          set -euo pipefail
+          BODY_FILE="$(mktemp)"
+          TEST_TAIL="$(mktemp)"
+          tail -n 140 "${{ steps.tests.outputs.log_file }}" > "${TEST_TAIL}" || true
+          cat > "${BODY_FILE}" <<EOF
+          # Upstream-Sync: Tests fehlgeschlagen
+
+          Der Merge von \`${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH}\` in
+          \`${TARGET_BRANCH}\` war konfliktfrei, aber die Prüfungen sind fehlgeschlagen.
+
+          - PR: ${{ steps.pr.outputs.pr_url }}
+          - Ziel-Branch: \`${TARGET_BRANCH}\`
+          - Upstream-SHA: \`${{ steps.sync.outputs.upstream_sha }}\`
+
+          ## Letzte Testausgabe
+
+          \`\`\`text
+          $(cat "${TEST_TAIL}")
+          \`\`\`
+
+          ## Aufgabe für Copilot / Bearbeiter
+
+          Bitte analysiere die fehlgeschlagenen Checks, passe den Sync-Branch an und achte darauf,
+          dass die Fleet-Telemetry-Erweiterungen erhalten bleiben.
+          EOF
+
+          ISSUE_URL="$(gh issue create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Upstream-Sync: Checks für ${TARGET_BRANCH} reparieren" \
+            --body-file "${BODY_FILE}" \
+            --label upstream-sync \
+            --label needs-manual-sync \
+            --label copilot-task)"
+          echo "issue_url=${ISSUE_URL}" >> "${GITHUB_OUTPUT}"
+          echo "issue_number=${ISSUE_URL##*/}" >> "${GITHUB_OUTPUT}"
+
+      - name: Copilot Review optional für Sync-PR anfragen
+        if: steps.pr.outputs.pr_url != '' && env.REQUEST_COPILOT_REVIEW == 'true'
+        continue-on-error: true
+        env:
+          COPILOT_REVIEW_TOKEN: ${{ secrets.COPILOT_REVIEW_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${COPILOT_REVIEW_TOKEN:-}" ]; then
+            export GH_TOKEN="${COPILOT_REVIEW_TOKEN}"
+          fi
+          gh pr edit "${{ steps.pr.outputs.pr_url }}" --add-reviewer @copilot || {
+            echo "Copilot Review konnte nicht angefragt werden. Prüfe Copilot-Code-Review-Berechtigung bzw. COPILOT_REVIEW_TOKEN."
+            exit 0
+          }
+
+      - name: Zusammenfassung
+        if: always()
+        run: |
+          {
+            echo '## Fork Upstream Sync'
+            echo
+            echo "- Ziel-Branch: \`${TARGET_BRANCH}\`"
+            echo "- Upstream: \`${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH}\`"
+            echo "- Sync nötig: \`${{ steps.sync.outputs.sync_needed }}\`"
+            echo "- Merge-Status: \`${{ steps.sync.outputs.merge_status }}\`"
+            if [ -n "${{ steps.pr.outputs.pr_url }}" ]; then
+              echo "- PR: ${{ steps.pr.outputs.pr_url }}"
+            fi
+            if [ -n "${{ steps.conflict_issue.outputs.issue_url }}" ]; then
+              echo "- Konflikt-Issue: ${{ steps.conflict_issue.outputs.issue_url }}"
+            fi
+            if [ -n "${{ steps.failed_tests_issue.outputs.issue_url }}" ]; then
+              echo "- Testfehler-Issue: ${{ steps.failed_tests_issue.outputs.issue_url }}"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
