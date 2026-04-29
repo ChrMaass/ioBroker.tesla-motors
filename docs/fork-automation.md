@@ -57,6 +57,12 @@ Empfohlene Runner-Labels:
 
 Der Runner sollte auf dem ioBroker-Host laufen und als Benutzer `iobroker` gestartet werden, damit `/opt/iobroker` ohne `sudo` beschreibbar ist.
 
+
+## Bekannte Betriebsdetails
+
+- Die Workflows setzen `GH_REPO` und übergeben bei Label-Operationen zusätzlich `--repo`, damit `gh` im Fork nicht versehentlich das Parent-Repository verwendet.
+- Der Deploy-Workflow nutzt auf dem Self-hosted Runner bewusst **kein** `actions/setup-node`-npm-Caching. Der globale npm-Cache auf dem ioBroker-Host kann sehr groß werden; ein Cache-Upload würde den Deploy-Job unnötig blockieren.
+
 ## Aktivierung
 
 Scheduled Workflows laufen nur, wenn diese Dateien auf dem Default-Branch des Forks liegen.

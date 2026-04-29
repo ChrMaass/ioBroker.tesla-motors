@@ -48,6 +48,7 @@ jobs:
       REQUEST_COPILOT_REVIEW: ${{ github.event_name != 'workflow_dispatch' || inputs.request_copilot_review }}
       ASSIGN_COPILOT_ON_ISSUE: ${{ github.event_name != 'workflow_dispatch' || inputs.assign_copilot_on_issue }}
       GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Fork auschecken
         uses: actions/checkout@v6
@@ -71,10 +72,10 @@ jobs:
       - name: Labels sicherstellen
         run: |
           set -euo pipefail
-          gh label create upstream-sync --color 0E8A16 --description 'Automatischer Abgleich mit dem Community-Adapter' --force
-          gh label create needs-manual-sync --color D93F0B --description 'Upstream-Änderungen benötigen manuelle Prüfung' --force
-          gh label create automated-pr --color 5319E7 --description 'Von GitHub Actions erzeugter PR' --force
-          gh label create copilot-task --color 1D76DB --description 'Für Copilot Coding Agent vorbereitet' --force
+          gh label create upstream-sync --repo "${GITHUB_REPOSITORY}" --color 0E8A16 --description 'Automatischer Abgleich mit dem Community-Adapter' --force
+          gh label create needs-manual-sync --repo "${GITHUB_REPOSITORY}" --color D93F0B --description 'Upstream-Änderungen benötigen manuelle Prüfung' --force
+          gh label create automated-pr --repo "${GITHUB_REPOSITORY}" --color 5319E7 --description 'Von GitHub Actions erzeugter PR' --force
+          gh label create copilot-task --repo "${GITHUB_REPOSITORY}" --color 1D76DB --description 'Für Copilot Coding Agent vorbereitet' --force
 
       - name: Upstream-Sync vorbereiten
         id: sync
