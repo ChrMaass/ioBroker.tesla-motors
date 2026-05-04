@@ -46,8 +46,11 @@ Aufgabe:
 2. Checkt standardmäßig `feature/335-fleet-telemetry` aus.
 3. Vergleicht den auszurollenden SHA mit `/opt/iobroker/.codex/tesla-motors-deployed-sha`.
 4. Führt bei neuen Commits `npm run lint -- .` und `npm test` aus.
-5. Installiert den Adapter in `/opt/iobroker` und startet `tesla-motors.0` neu.
-6. Legt vorher ein Backup unter `/opt/iobroker/backups/` an.
+5. Erstellt per `npm pack` ein Tarball-Paket und installiert **dieses** in `/opt/iobroker`.
+6. Startet `tesla-motors.0` neu und markiert den SHA erst als ausgerollt, wenn die Instanz `alive=true` meldet.
+7. Legt vorher ein Backup unter `/opt/iobroker/backups/` an.
+
+Wichtig: Der GitHub-Actions-Workspace darf nicht direkt per `npm install ${GITHUB_WORKSPACE}` installiert werden. Auf dem Self-hosted Runner entsteht sonst ein Symlink nach `_work/...`; spätere Checkouts können dort `node_modules` entfernen, wodurch der Adapter zur Laufzeit z. B. `@iobroker/adapter-core` nicht mehr findet.
 
 Empfohlene Runner-Labels:
 

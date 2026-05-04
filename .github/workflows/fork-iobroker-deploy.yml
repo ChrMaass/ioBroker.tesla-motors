@@ -77,7 +77,7 @@ jobs:
         if: steps.status.outputs.should_deploy == 'true' || github.event_name == 'workflow_dispatch'
         uses: actions/setup-node@v6
         with:
-          node-version: '24.x'
+          node-version: '22.x'
 
       - name: Adapter-Prüfungen ausführen
         if: steps.status.outputs.should_deploy == 'true' || github.event_name == 'workflow_dispatch'
@@ -113,15 +113,42 @@ jobs:
             package.json \
             package-lock.json 2>/dev/null || true
 
+          PACKAGE_DIR="${IOBROKER_DIR}/.codex/packages"
+          mkdir -p "${PACKAGE_DIR}"
+          PACKAGE_NAME="$(npm pack --pack-destination "${PACKAGE_DIR}" --silent | tail -n 1)"
+          PACKAGE_FILE="${PACKAGE_DIR}/${PACKAGE_NAME}"
+          if [ ! -f "${PACKAGE_FILE}" ]; then
+            echo "Paket ${PACKAGE_FILE} wurde nicht erzeugt."
+            exit 1
+          fi
+          find "${PACKAGE_DIR}" -name 'iobroker.tesla-motors-*.tgz' -mtime +14 -delete || true
+
           cd "${IOBROKER_DIR}"
           ./iobroker stop "${IOBROKER_INSTANCE}" || true
-          npm install "${GITHUB_WORKSPACE}"
+
+          # Wichtig: Nicht den GitHub-Actions-Workspace direkt installieren.
+          # `npm install ${GITHUB_WORKSPACE}` erzeugt auf diesem Host einen Symlink
+          # nach `_work/...`; spätere Checkouts entfernen dort node_modules und der
+          # Adapter startet dann ohne @iobroker/adapter-core nicht mehr.
+          npm install "${PACKAGE_FILE}" --omit=dev
+          if [ -L "node_modules/iobroker.tesla-motors" ]; then
+            echo "Fehler: iobroker.tesla-motors wurde als Symlink installiert."
+            exit 1
+          fi
+
           ./iobroker upload tesla-motors
           ./iobroker start "${IOBROKER_INSTANCE}"
 
           sleep 20
-          ./iobroker state get "system.adapter.${IOBROKER_INSTANCE}.alive" || true
+          ALIVE_STATE="$(./iobroker state get "system.adapter.${IOBROKER_INSTANCE}.alive" || true)"
+          echo "${ALIVE_STATE}"
+          if ! printf '%s' "${ALIVE_STATE}" | grep -q '"val":true'; then
+            echo "Adapter ${IOBROKER_INSTANCE} ist nach dem Deployment nicht alive."
+            exit 1
+          fi
+
           echo "${{ steps.status.outputs.deploy_sha }}" > "${DEPLOY_MARKER_FILE}"
+          echo "Paket: ${PACKAGE_FILE}"
           echo "Backup: ${BACKUP_FILE}"
 
       - name: Zusammenfassung
