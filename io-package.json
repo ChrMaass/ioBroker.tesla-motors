@@ -1,8 +1,21 @@
 {
   "common": {
     "name": "tesla-motors",
-    "version": "2.0.3",
+    "version": "12.0.3",
     "news": {
+      "12.0.3": {
+        "en": "Private Maass Home build with Fleet Telemetry support based on upstream 2.0.3",
+        "de": "Private Maass-Home-Version mit Fleet-Telemetry-Unterstützung auf Basis von Upstream 2.0.3",
+        "ru": "Private Maass Home build with Fleet Telemetry support based on upstream 2.0.3",
+        "pt": "Private Maass Home build with Fleet Telemetry support based on upstream 2.0.3",
+        "nl": "Private Maass Home build with Fleet Telemetry support based on upstream 2.0.3",
+        "fr": "Private Maass Home build with Fleet Telemetry support based on upstream 2.0.3",
+        "it": "Private Maass Home build with Fleet Telemetry support based on upstream 2.0.3",
+        "es": "Private Maass Home build with Fleet Telemetry support based on upstream 2.0.3",
+        "pl": "Private Maass Home build with Fleet Telemetry support based on upstream 2.0.3",
+        "uk": "Private Maass Home build with Fleet Telemetry support based on upstream 2.0.3",
+        "zh-cn": "Private Maass Home build with Fleet Telemetry support based on upstream 2.0.3"
+      },
       "2.0.3": {
         "en": "instruction text improved\nAdapter requires node.js >= 22 now",
         "de": "anleitungstext verbessert\nAdapter benötigt node.js >= 22 jetzt",
