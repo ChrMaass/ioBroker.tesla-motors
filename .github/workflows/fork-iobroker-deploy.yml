@@ -3,14 +3,14 @@ name: Fork ioBroker Deploy
 on:
   schedule:
     # Workflow liegt absichtlich nur im Fork-Default-Branch und prüft von dort
-    # regelmäßig den Telemetrie-Branch. So landet die CI/CD nicht im Community-PR.
+    # regelmäßig den privaten Telemetrie-Deploy-Branch. So landet die CI/CD nicht im Community-PR.
     - cron: '*/30 * * * *'
   workflow_dispatch:
     inputs:
       source_ref:
         description: 'Branch, Tag oder SHA, der auf dem ioBroker installiert werden soll'
         required: true
-        default: 'feature/335-fleet-telemetry'
+        default: 'private/maass-home-fleet-telemetry'
       force:
         description: 'Auch deployen, wenn derselbe SHA bereits installiert ist'
         type: boolean
@@ -35,7 +35,7 @@ jobs:
     if: github.repository == 'ChrMaass/ioBroker.tesla-motors'
     runs-on: [self-hosted, maass-home, iobroker]
     env:
-      SOURCE_REF: ${{ github.event.inputs.source_ref || 'feature/335-fleet-telemetry' }}
+      SOURCE_REF: ${{ github.event.inputs.source_ref || 'private/maass-home-fleet-telemetry' }}
       FORCE_DEPLOY: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
       IOBROKER_DIR: /opt/iobroker
@@ -45,7 +45,7 @@ jobs:
       - name: Quellstand auschecken
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.inputs.source_ref || 'feature/335-fleet-telemetry' }}
+          ref: ${{ github.event.inputs.source_ref || 'private/maass-home-fleet-telemetry' }}
           fetch-depth: 0
 
       - name: Deployment-Status prüfen

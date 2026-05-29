@@ -36,6 +36,8 @@ Copilot-Optionen:
 
 Ohne diese Secrets werden PR/Issues trotzdem angelegt; die Copilot-Zuweisung wird dann übersprungen oder nur best-effort versucht.
 
+Für Syncs, die Dateien unter `.github/workflows/` ändern, reicht `GITHUB_TOKEN` nicht zuverlässig aus. Dann blockiert GitHub den Push mit dem Hinweis auf fehlende `workflows`-Berechtigung. Dafür kann optional ein Repository-Secret `FORK_SYNC_TOKEN` hinterlegt werden. Geeignet ist ein User-/Fine-grained-Token mit Schreibrechten auf Inhalte und Workflows dieses Forks; klassische PATs benötigen mindestens `repo` und `workflow`.
+
 ### `Fork ioBroker Deploy`
 
 Datei: `.github/workflows/fork-iobroker-deploy.yml`
@@ -43,7 +45,7 @@ Datei: `.github/workflows/fork-iobroker-deploy.yml`
 Aufgabe:
 
 1. Läuft auf einem Self-hosted Runner in Christians Heimnetz.
-2. Checkt standardmäßig `feature/335-fleet-telemetry` aus.
+2. Checkt standardmäßig `private/maass-home-fleet-telemetry` aus, damit Christians ioBroker die private Version mit hoher Versionsnummer nutzt und nicht versehentlich den Community-PR-Branch installiert.
 3. Vergleicht den auszurollenden SHA mit `/opt/iobroker/.codex/tesla-motors-deployed-sha`.
 4. Führt bei neuen Commits `npm run lint -- .` und `npm test` aus.
 5. Erstellt per `npm pack` ein Tarball-Paket und installiert **dieses** in `/opt/iobroker`.

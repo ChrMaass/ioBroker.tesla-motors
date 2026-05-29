@@ -47,14 +47,14 @@ jobs:
       UPSTREAM_BRANCH: ${{ github.event.inputs.upstream_branch || 'master' }}
       REQUEST_COPILOT_REVIEW: ${{ github.event_name != 'workflow_dispatch' || inputs.request_copilot_review }}
       ASSIGN_COPILOT_ON_ISSUE: ${{ github.event_name != 'workflow_dispatch' || inputs.assign_copilot_on_issue }}
-      GH_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
       - name: Fork auschecken
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          token: ${{ github.token }}
+          token: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
 
       - name: Node.js vorbereiten
         uses: actions/setup-node@v6
